@@ -343,6 +343,13 @@ FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
 # bin/fm-busy-lib.sh, never from this row.
 FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
+# agy (Antigravity CLI) renders `esc to cancel` in its footer and a spinner row
+# ending `Working...` for the whole turn; its idle footer reads `? for shortcuts`
+# (verified live, agy 1.2.1). Either signal alone carries busy. The same footer
+# token also appears while a slash-command completion popup is open, which only
+# defers a delivery; agy's recorded worker state comes from its plugin hooks in
+# bin/fm-busy-lib.sh, never from this row.
+FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc to cancel|Working\.\.\.'
 
 fm_busy_lines_match() {  # [harness]
   local harness=${1:-} lines regex
@@ -359,6 +366,7 @@ fm_busy_lines_match() {  # [harness]
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
+      agy) regex=$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT ;;
       '') regex=$FM_DELIVERY_BUSY_REGEX_DEFAULT ;;
       *)
         # A supplied harness must never borrow another harness's signature.

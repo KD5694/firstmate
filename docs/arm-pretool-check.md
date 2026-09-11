@@ -24,7 +24,7 @@ It tokenizes the bytes and classifies lexical execution positions only.
 
 - Stdin JSON at `.tool_input.command` for Claude and Codex.
 - Stdin JSON at `.toolInput.command` for Grok.
-- `--command <exact string>` for OpenCode, Pi, pi-signed, and omp.
+- `--command <exact string>` for OpenCode, Pi, pi-signed, omp, and agy.
 - `--background` as a compatibility-only field that never changes the decision.
 - `--claude` to preserve Claude's stderr-only deny requirement.
 
@@ -152,6 +152,7 @@ Prose may improve without changing adapter behavior.
 - Codex blocks on exit 2 and displays stderr.
 - OpenCode throws only when the checker exits 2.
 - Pi, pi-signed, and omp return `{block: true}` only when the checker exits 2.
+- agy prints the default stdout `{"decision":"deny"}` object only when the checker exits 2, and prints nothing otherwise, because agy treats an empty stdout as allow but `{}`, any unrecognized object, and a nonzero exit as a deny.
 
 ## Harness wiring
 
@@ -164,6 +165,7 @@ Prose may improve without changing adapter behavior.
 | Pi / pi-signed | `event.input.command` | `.pi/extensions/fm-primary-turnend-guard.ts` passes one `--command` argument and returns `{block: true}` only for exit 2. |
 | omp | `event.input.command` | `.omp/extensions/fm-primary-turnend-guard.ts` passes one `--command` argument and returns `{block: true, reason}` only for exit 2; omp surfaces the reason verbatim to the model (verified 18.1.2). |
 | Cursor | `.tool_input.command` | `.cursor/hooks.json` matches `tool_name` `Shell` and forwards stdin with `--cursor`. Cursor reads the RETURNED object rather than the exit status, so `--cursor` prints `{"permission":"deny","user_message":"[code] reason"}` on stdout and exits 0; only that rendering is verified to block the command and surface the reason. |
+| agy | `.toolCall.args.CommandLine` | `.agents/hooks.json` matches `run_command` and runs `bin/fm-agy-hook.sh pre-tool`, which passes one `--command` argument and prints the checker's `{"decision":"deny","reason"}` stdout only for exit 2; agy shows the model `tool call denied by pre-tool hook: <reason>` (verified 1.2.1). |
 
 Cursor also loads `<project>/.claude/settings.json`, so the tracked Claude entry receives the same event. Without `--cursor` a Cursor-delivered payload is that duplicate and allows without re-classifying, decided from the payload's own `cursor_version` by `bin/fm-hook-host-lib.sh`; [`turnend-guard.md`](turnend-guard.md#harness-integrations) owns why that predicate reads the payload rather than the environment.
 

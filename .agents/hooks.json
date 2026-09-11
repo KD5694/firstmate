@@ -1,0 +1,30 @@
+{
+  "firstmate-primary": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "[ -x ../bin/fm-agy-hook.sh ] || exit 0; exec ../bin/fm-agy-hook.sh session-start",
+        "timeout": 180
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x ../bin/fm-agy-hook.sh ] || exit 0; exec ../bin/fm-agy-hook.sh pre-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "[ -x ../bin/fm-agy-hook.sh ] || { printf '{}'; exit 0; }; exec ../bin/fm-agy-hook.sh stop",
+        "timeout": 30
+      }
+    ]
+  }
+}

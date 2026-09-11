@@ -440,8 +440,58 @@ test_claude_spawn_pretrusts_its_worktree_and_reaches_the_brief() {
   pass "fm-spawn.sh: a claude spawn pre-trusts its worktree and launches with the brief"
 }
 
+# --harness agy writes agy's own store under the same scope test. HOME is the
+# case's config dir, so the store is <config>/.gemini/antigravity-cli/settings.json.
+run_agy_trust() {  # <home> <worktree> <project>
+  CLAUDE_CONFIG_DIR='' HOME="$1" "$TRUST" --harness agy "$2" "$3" 2>&1
+}
+
+test_agy_store_trusts_the_worktree_and_preserves_content() {
+  local rec out store before
+  rec=$(make_case agy-fresh)
+  read_case "$rec"
+  store="$CONFIG/.gemini/antigravity-cli/settings.json"
+  mkdir -p "$(dirname "$store")"
+  printf '{\n  "colorScheme": "tokyo night",\n  "trustedWorkspaces": [\n    "/elsewhere"\n  ]\n}\n' > "$store"
+  out=$(run_agy_trust "$CONFIG" "$WT" "$PROJ")
+  expect_code 0 $? "a fresh linked worktree must be trusted in agy's store: $out"
+  assert_contains "$out" "trusted:" "registration did not report what it trusted"
+  assert_store_value "$store" "[\"/elsewhere\",\"$WT\"]" "the worktree must be appended after the existing entries" trustedWorkspaces
+  assert_store_value "$store" '"tokyo night"' "an unrelated key was not preserved" colorScheme
+  assert_absent "$CONFIG/.claude.json" "an agy registration must not write the Claude store"
+  [ -z "$(find "$(dirname "$store")" -maxdepth 1 -name '.settings.json.fm-trust.*' -print -quit)" ] \
+    || fail "a temporary store file was left behind in agy's config directory"
+  before=$(cat "$store")
+  out=$(run_agy_trust "$CONFIG" "$WT" "$PROJ")
+  expect_code 0 $? "a repeat agy registration must succeed: $out"
+  assert_equals "$before" "$(cat "$store")" "a repeat agy registration must leave the store untouched"
+  pass "fm-claude-trust.sh --harness agy: trusts the worktree once and preserves the store"
+}
+
+test_agy_store_keeps_the_scope_refusals() {
+  local rec out store
+  rec=$(make_case agy-scope)
+  read_case "$rec"
+  store="$CONFIG/.gemini/antigravity-cli/settings.json"
+  out=$(run_agy_trust "$CONFIG" "$PROJ" "$PROJ")
+  expect_code 1 $? "the primary checkout must be refused for agy: $out"
+  assert_contains "$out" "refusing to pre-register agy trust" "the refusal must name agy"
+  assert_contains "$out" "primary checkout" "the refusal did not name the primary checkout"
+  assert_absent "$store" "a refused agy registration must not create the store"
+  mkdir -p "$(dirname "$store")"
+  printf '{"trustedWorkspaces":"not a list"}\n' > "$store"
+  out=$(run_agy_trust "$CONFIG" "$WT" "$PROJ")
+  expect_code 1 $? "a malformed agy store must be refused: $out"
+  assert_equals '{"trustedWorkspaces":"not a list"}' "$(cat "$store")" "a malformed agy store must be left alone"
+  out=$(CLAUDE_CONFIG_DIR='' HOME="$CONFIG" "$TRUST" --harness nope "$WT" "$PROJ" 2>&1)
+  expect_code 2 $? "an unknown store must be a usage error: $out"
+  pass "fm-claude-trust.sh --harness agy: scope and malformed-store refusals hold"
+}
+
 test_fresh_worktree_is_trusted
 test_registration_is_idempotent
+test_agy_store_trusts_the_worktree_and_preserves_content
+test_agy_store_keeps_the_scope_refusals
 test_primary_checkout_is_refused
 test_cdpath_cannot_defeat_the_primary_checkout_refusal
 test_git_env_overrides_cannot_defeat_the_primary_checkout_refusal

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Pre-register Claude Code's workspace trust for the isolated task worktree a
 # ship/scout spawn is about to launch a claude crewmate into, so the worker
-# reaches its brief instead of wedging on the trust dialog.
+# reaches its brief instead of wedging on the trust dialog. `--harness agy`
+# registers the same worktree in agy's (Google Antigravity CLI's) trust store
+# instead, under the same scope test; see AGY below for why agy needs it.
 #
-# Usage: fm-claude-trust.sh <worktree> <project>
+# Usage: fm-claude-trust.sh [--harness claude|agy] <worktree> <project>
+#   --harness   whose trust store to write; default claude
 #   <worktree>  the isolated task worktree this spawn launches into
 #   <project>   the primary checkout that worktree belongs to
 # Prints one line naming what it registered; refuses loudly on anything else.
@@ -52,6 +55,20 @@
 # onto the claude launch verbatim rather than resolving it, and the worker's pane
 # starts in the task worktree, so only an absolute value names the same store on
 # both sides; a relative one is refused below rather than guessed at.
+#
+# AGY. agy 1.2.1 also gates a folder it has never seen behind a trust dialog,
+# and --dangerously-skip-permissions does not cover it either. Its cursor starts
+# on "Yes, I trust this folder", so the dialog alone would be answerable, but an
+# agy launched into an untrusted folder does not load that folder's workspace
+# plugins for the turn the trust is granted in: the launch-brief turn then runs
+# without the per-task busy and turn-end plugin fm-spawn.sh writes, and those
+# hooks only start firing on the next turn (verified, agy 1.2.1; see
+# docs/verification/agy.md). Pre-registering removes both the dialog and that
+# gap. agy's store is ${HOME}/.gemini/antigravity-cli/settings.json, whose
+# trustedWorkspaces array lists exact paths (a trusted parent does not cover a
+# child). This appends the worktree path once, preserving every other key and
+# entry, under the same ownership, fingerprint, and readback guards as the
+# Claude store; agy writes that file itself when a dialog is answered.
 set -u
 # Path resolution here must answer from the filesystem, never from the caller's
 # environment, because the refusals below are the safety property. CDPATH would
@@ -69,11 +86,23 @@ unset CDPATH \
   GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_CONFIG GIT_CONFIG_GLOBAL \
   GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
 
-[ "$#" -eq 2 ] || { echo "usage: fm-claude-trust.sh <worktree> <project>" >&2; exit 2; }
+usage() { echo "usage: fm-claude-trust.sh [--harness claude|agy] <worktree> <project>" >&2; exit 2; }
+TRUST_HARNESS=claude
+if [ "${1:-}" = --harness ]; then
+  [ "$#" -ge 2 ] || usage
+  TRUST_HARNESS=$2
+  shift 2
+fi
+case "$TRUST_HARNESS" in
+  claude) TRUST_LABEL=Claude ;;
+  agy) TRUST_LABEL=agy ;;
+  *) usage ;;
+esac
+[ "$#" -eq 2 ] || usage
 WT_ARG=$1
 PROJ_ARG=$2
 
-refuse() { echo "error: refusing to pre-register Claude trust: $1" >&2; exit 1; }
+refuse() { echo "error: refusing to pre-register $TRUST_LABEL trust: $1" >&2; exit 1; }
 
 real_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
 
@@ -95,30 +124,38 @@ WT_REAL=$(real_dir "$WT_ARG") || true
 PROJ_REAL=$(real_dir "$PROJ_ARG") || true
 [ -n "$PROJ_REAL" ] || refuse "project '$PROJ_ARG' is not an accessible directory"
 
-CONFIG_DIR=${CLAUDE_CONFIG_DIR:-${HOME:-}}
-[ -n "$CONFIG_DIR" ] || refuse "neither CLAUDE_CONFIG_DIR nor HOME is set, so the store cannot be located"
-# A relative value resolves against this process's cwd here but against the
-# worker's own cwd once fm-spawn.sh forwards it verbatim onto the launch, so the
-# two sides can name different stores and the registration would report a
-# success the worker never sees. Refuse rather than guess at the worker's cwd.
-case ${CLAUDE_CONFIG_DIR:-} in
-  '' | /*) ;;
-  *) refuse "CLAUDE_CONFIG_DIR '$CLAUDE_CONFIG_DIR' is a relative path, so the store the worker reads cannot be guaranteed to be the one written here; set it to an absolute path" ;;
-esac
+if [ "$TRUST_HARNESS" = agy ]; then
+  case ${HOME:-} in
+    /*) CONFIG_DIR=$HOME/.gemini/antigravity-cli ;;
+    *) refuse "HOME is not set to an absolute path, so agy's store cannot be located" ;;
+  esac
+else
+  CONFIG_DIR=${CLAUDE_CONFIG_DIR:-${HOME:-}}
+  [ -n "$CONFIG_DIR" ] || refuse "neither CLAUDE_CONFIG_DIR nor HOME is set, so the store cannot be located"
+  # A relative value resolves against this process's cwd here but against the
+  # worker's own cwd once fm-spawn.sh forwards it verbatim onto the launch, so the
+  # two sides can name different stores and the registration would report a
+  # success the worker never sees. Refuse rather than guess at the worker's cwd.
+  case ${CLAUDE_CONFIG_DIR:-} in
+    '' | /*) ;;
+    *) refuse "CLAUDE_CONFIG_DIR '$CLAUDE_CONFIG_DIR' is a relative path, so the store the worker reads cannot be guaranteed to be the one written here; set it to an absolute path" ;;
+  esac
+fi
 # fm-spawn forwards a set CLAUDE_CONFIG_DIR onto the launch without requiring it
-# to exist, because claude creates its own store directory. Create it here for
-# the same reason, and refuse only when it genuinely cannot be written, since a
-# store this cannot reach means the worker meets the dialog after all.
+# to exist, because claude creates its own store directory, and agy creates its
+# own the same way. Create it here for the same reason, and refuse only when it
+# genuinely cannot be written, since a store this cannot reach means the worker
+# meets the dialog after all.
 CONFIG_DIR_REAL=$(real_dir "$CONFIG_DIR") || true
 if [ -z "$CONFIG_DIR_REAL" ]; then
   mkdir -p "$CONFIG_DIR" 2>/dev/null || true
   CONFIG_DIR_REAL=$(real_dir "$CONFIG_DIR") || true
 fi
-[ -n "$CONFIG_DIR_REAL" ] || refuse "Claude config directory '$CONFIG_DIR' does not exist and could not be created"
+[ -n "$CONFIG_DIR_REAL" ] || refuse "$TRUST_LABEL config directory '$CONFIG_DIR' does not exist and could not be created"
 
 # A home or config directory is never a task worktree. Checked explicitly so
 # the refusal names the real reason instead of the git verdict behind it.
-[ "$WT_REAL" != "$CONFIG_DIR_REAL" ] || refuse "'$WT_REAL' is the Claude config directory, not a task worktree"
+[ "$WT_REAL" != "$CONFIG_DIR_REAL" ] || refuse "'$WT_REAL' is the $TRUST_LABEL config directory, not a task worktree"
 if [ -n "${HOME:-}" ]; then
   HOME_REAL=$(real_dir "$HOME") || true
   [ "$WT_REAL" != "${HOME_REAL:-}" ] || refuse "'$WT_REAL' is the home directory, not a task worktree"
@@ -150,7 +187,11 @@ PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
 # where a missing tool belongs rather than as a stalled pane later.
 command -v node >/dev/null 2>&1 || refuse "node is required to record workspace trust and was not found on PATH"
 
-STORE="$CONFIG_DIR_REAL/.claude.json"
+if [ "$TRUST_HARNESS" = agy ]; then
+  STORE="$CONFIG_DIR_REAL/settings.json"
+else
+  STORE="$CONFIG_DIR_REAL/.claude.json"
+fi
 # A dotfile manager or a synced folder legitimately symlinks this store, so the
 # link is followed to its final target and every check below judges that target.
 # Ownership is the property that matters: another user's file is refused however
@@ -190,11 +231,11 @@ fi
 # attempts, and it must fail loudly rather than report a trust it did not leave.
 # ponytail: fingerprint-and-refuse, not a lock; flock is absent on macOS and
 # cannot stop a vendor session's own rewrite anyway.
-if ! node - "$STORE" "$WT_REAL" <<'NODE'
+if ! node - "$STORE" "$WT_REAL" "$TRUST_HARNESS" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const [store, worktree] = process.argv.slice(2);
+const [store, worktree, harness] = process.argv.slice(2);
 const readStore = () => {
   try {
     return fs.readFileSync(store);
@@ -218,28 +259,41 @@ const attempt = () => {
       }
     }
   }
-  if (root.projects === undefined) root.projects = {};
-  const projects = root.projects;
-  if (projects === null || typeof projects !== "object" || Array.isArray(projects)) {
-    throw new Error(`${store} has a non-object "projects" value`);
+  if (harness === "agy") {
+    if (root.trustedWorkspaces === undefined) root.trustedWorkspaces = [];
+    const trusted = root.trustedWorkspaces;
+    if (!Array.isArray(trusted)) {
+      throw new Error(`${store} has a non-array "trustedWorkspaces" value`);
+    }
+    // Already listed: nothing to write, so the vendor's file is left untouched.
+    if (trusted.includes(worktree)) return "recorded";
+    trusted.push(worktree);
+  } else {
+    if (root.projects === undefined) root.projects = {};
+    const projects = root.projects;
+    if (projects === null || typeof projects !== "object" || Array.isArray(projects)) {
+      throw new Error(`${store} has a non-object "projects" value`);
+    }
+    let entry = projects[worktree];
+    if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      entry = {};
+    }
+    entry.hasTrustDialogAccepted = true;
+    projects[worktree] = entry;
   }
-  let entry = projects[worktree];
-  if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-    entry = {};
-  }
-  entry.hasTrustDialogAccepted = true;
-  projects[worktree] = entry;
   // Unpredictable name plus an exclusive create: the config directory may be
   // writable by another local account, and a predictable path could be
   // pre-created there as a symlink that a plain write would follow into some
   // other file this user owns. "wx" refuses an existing path outright.
   const unique = `${process.pid}.${crypto.randomBytes(8).toString("hex")}`;
-  const tmp = path.join(path.dirname(store), `.claude.json.fm-trust.${unique}`);
+  const base = harness === "agy" ? ".settings.json" : ".claude.json";
+  const tmp = path.join(path.dirname(store), `${base}.fm-trust.${unique}`);
   // Two-space pretty-printed, because that is the format Claude Code itself
   // writes: the store on the box this was measured on begins "{\n  " and runs
   // 9646 lines. Compact would reformat the operator's whole config on every
   // spawn and the vendor's next write would expand it again, so this must not
   // be "simplified" to JSON.stringify(root) without re-measuring the vendor.
+  // agy 1.2.1 writes its settings.json in the same two-space form.
   fs.writeFileSync(tmp, `${JSON.stringify(root, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   let renamed = false;
   try {
@@ -250,6 +304,9 @@ const attempt = () => {
     if (!renamed) fs.rmSync(tmp, { force: true });
   }
   const back = JSON.parse(fs.readFileSync(store, "utf8"));
+  if (harness === "agy") {
+    return Array.isArray(back.trustedWorkspaces) && back.trustedWorkspaces.includes(worktree) ? "recorded" : "dropped";
+  }
   return back.projects?.[worktree]?.hasTrustDialogAccepted === true ? "recorded" : "dropped";
 };
 try {

@@ -125,7 +125,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -283,15 +283,18 @@
 # resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
 # the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
 # park owns that home's supervision (docs/supervision-protocols/cursor.md).
-# claude is the one harness whose pre-launch setup can REFUSE the spawn: before
-# any per-task state exists, and before its worktree .claude/settings.local.json
+# claude and agy are the harnesses whose pre-launch setup can REFUSE the spawn:
+# before any per-task state exists, and before its worktree .claude/settings.local.json
 # hooks are written, a non-secondmate claude launch pre-registers the worktree in
 # the launching user's own Claude trust store through bin/fm-claude-trust.sh,
 # because Claude's interactive workspace-trust dialog gates a fresh worktree and
 # firstmate cannot answer it. That helper's header owns the structural scope test
 # and every refusal; a failed registration stops this spawn rather than launching
 # a worker that would wedge on the dialog. A --secondmate launch never runs it,
-# so a claude secondmate home keeps its own one-time trust decision.
+# so a claude secondmate home keeps its own one-time trust decision. An agy
+# launch registers the worktree in agy's own trust store through the same helper
+# (--harness agy), because an untrusted agy runs its launch-brief turn without the
+# per-task plugin; the helper's header owns that reason too.
 # Every claude launch also carries the attribution-off policy in its per-launch
 # --settings JSON, so a spawned worker never writes a Co-Authored-By trailer,
 # Claude-Session link, or generated-with line into a commit or PR body;
@@ -1326,7 +1329,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1584,6 +1587,12 @@ launch_template() {
     # when a supported effort is requested, since a second --config-override
     # would silently discard the first (confirmed live).
     rovo) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __ROVOBIN__ run --yolo __MODELFLAG____ROVOCONFIGOVERRIDE__' ;;
+    # agy (Google Antigravity CLI): --prompt-interactive submits the brief and
+    # keeps the session interactive. The prompt MUST be attached with `=`; a
+    # detached value after other flags is misparsed (verified, agy 1.1.22 and
+    # 1.2.1). agy scrubs no inherited CLAUDECODE, so the foreign markers are
+    # cleared here. Its busy-state hooks are the per-task plugin written below.
+    agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive="$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -1646,6 +1655,13 @@ fi
 # standing one up with no way to arm its watch cycle.
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
   echo "error: rovo is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
+  exit 1
+fi
+
+# agy has a verified PRIMARY protocol (docs/supervision-protocols/agy.md), but no
+# secondmate launch, charter delivery, or secondmate recovery was verified on it.
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = agy ]; then
+  echo "error: agy is verified for crewmate/scout work and as the primary, but not as a secondmate launch. Select a harness verified for secondmates." >&2
   exit 1
 fi
 
@@ -1834,12 +1850,20 @@ muse_credential_present() {
 
 model_flag_for_harness() {
   local harness=$1 model=$2
+  [ "$harness" != agy ] || model=$(agy_effective_model "$model")
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
+}
+
+# agy launches on the captain's chosen default when no model is supplied, rather
+# than on whatever model the shared agy settings last selected.
+AGY_DEFAULT_MODEL=gemini-3.7-flash-high
+agy_effective_model() {  # <model>
+  if [ -n "$1" ] && [ "$1" != default ]; then printf '%s' "$1"; else printf '%s' "$AGY_DEFAULT_MODEL"; fi
 }
 
 effort_flag_for_harness() {
@@ -1898,6 +1922,22 @@ effort_flag_for_harness() {
       case "$effort" in
         low|medium|high|xhigh) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
         max) printf -- '--reasoning-effort %s ' "$(shell_quote ultra)" ;;
+      esac
+      ;;
+    agy)
+      # agy 1.2.1 accepts --effort low|medium|high only on a base gemini-* id
+      # (gemini-3.7-flash). Every listed id already encodes its level
+      # (gemini-3.7-flash-high), and a differing --effort beside it, or any
+      # --effort beside a non-gemini id, is a launch error, so both omit the flag.
+      # xhigh caps at high; max is outside agy's set and is recorded only.
+      case "$(agy_effective_model "$model")" in
+        gemini-*-low|gemini-*-medium|gemini-*-high) ;;
+        gemini-*)
+          case "$effort" in
+            low|medium|high) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+            xhigh) printf -- '--effort %s ' "$(shell_quote high)" ;;
+          esac
+          ;;
       esac
       ;;
     # rovo has no --effort flag on `run`; its effort mapping rides
@@ -3150,6 +3190,14 @@ if [ "$KIND" != secondmate ]; then
         exit 1
       fi
       ;;
+    agy)
+      # agy's dialog is answerable, but an untrusted launch skips the per-task
+      # plugin for the whole launch-brief turn (bin/fm-claude-trust.sh, AGY).
+      if ! "$FM_ROOT/bin/fm-claude-trust.sh" --harness agy "$WT" "$PROJ_ABS" >/dev/null; then
+        echo "error: could not pre-register agy workspace trust for $WT; refusing to launch an agy worker whose first turn would run without its busy and turn-end hooks; inspect window $T" >&2
+        exit 1
+      fi
+      ;;
   esac
 fi
 
@@ -3217,7 +3265,7 @@ if [ "$KIND" != secondmate ]; then
       }
       [ "$RELAUNCH" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
       ;;
-    gemini)
+    gemini|agy)
       if [ "$RAW_LAUNCH" -eq 0 ]; then
         BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
           echo "error: failed to arm the busy-state contract for $ID" >&2
@@ -3292,6 +3340,27 @@ EOF
       cat > "$STATE_REAL/$ID.gemini-settings.json" <<EOF
 {"hooks":{"BeforeAgent":[{"hooks":[{"type":"command","command":"$g_before"}]}],"AfterAgent":[{"hooks":[{"type":"command","command":"$g_after"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$g_sessionend"}]}]}}
 EOF
+      fi
+      ;;
+    agy)
+      if [ "$RAW_LAUNCH" -eq 0 ]; then
+      # Semantic busy-state hooks (bin/fm-busy-lib.sh): PreInvocation fires
+      # before every model call and Stop when the execution loop ends (verified,
+      # agy 1.2.1). They live in a firstmate-owned workspace PLUGIN, never the
+      # worktree's .agents/hooks.json, which a project - firstmate included -
+      # may track; agy merges plugin hooks with the project's own. Each command
+      # tolerates a refused event and prints the empty object agy expects.
+      agy_plugin="$WT/.agents/plugins/firstmate-task"
+      mkdir -p "$agy_plugin"
+      busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
+      busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source agy-hook"
+      a_pre=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event pre-invocation >/dev/null 2>&1 || true; printf '{}'")
+      a_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop >/dev/null 2>&1 || true; printf '{}'")
+      printf '%s\n' '{"name":"firstmate-task"}' > "$agy_plugin/plugin.json"
+      cat > "$agy_plugin/hooks.json" <<EOF
+{"firstmate-task":{"PreInvocation":[{"type":"command","command":"$a_pre"}],"Stop":[{"type":"command","command":"$a_stop"}]}}
+EOF
+      exclude_path '.agents/plugins/firstmate-task/'
       fi
       ;;
     opencode*)
@@ -3799,8 +3868,8 @@ case "$HARNESS" in
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
+  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo|agy)
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u ANTIGRAVITY_AGENT $LAUNCH"
     ;;
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
