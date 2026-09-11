@@ -7,6 +7,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_git_identity fmtest fmtest@example.invalid
 
 # Drop the ambient harness markers so what this suite asserts does not depend on
 # which harness it was launched from.
