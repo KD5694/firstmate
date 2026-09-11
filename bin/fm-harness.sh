@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -79,6 +79,13 @@ detect_own() {
   # additionally clears foreign markers at rovo's launch boundary as defense in depth.
   [ "${ATLASSIAN_AGENT_TYPE:-}" = "rovo" ] && { echo rovo; return; }
   [ "${ROVODEV_CLI:-}" = "1" ] && { echo rovo; return; }
+  # agy (Google Antigravity CLI) sets ANTIGRAVITY_AGENT=1 on its tool processes and
+  # does NOT scrub an inherited CLAUDECODE (verified, agy 1.2.1), so it is tested
+  # BEFORE the CLAUDECODE line for cursor's reason above. agy's hook processes
+  # carry no identity marker of their own; bin/fm-agy-hook.sh proves its agy
+  # parent and exports this same marker for the firstmate scripts it runs,
+  # because those run too deep below agy for the ancestry walk to reach it.
+  [ "${ANTIGRAVITY_AGENT:-}" = "1" ] && { echo agy; return; }
   # omp (Oh My Pi) publishes NO harness-identity marker of its own: verified on
   # omp 18.1.11 that PI_CODING_AGENT is absent from the binary and that the
   # default profile sets neither PI_CODING_AGENT_DIR nor OMP_PROFILE in the
@@ -167,6 +174,9 @@ detect_own() {
       # named `claude` with its own node child, and that fallback's *claude*
       # args glob would otherwise claim it if that subtree were ever walked.
       omp) echo omp; return ;;
+      # agy is a Go binary whose process name is exactly `agy` (verified, agy
+      # 1.2.1); anchored for omp's reason above.
+      agy) echo agy; return ;;
       node*|python*)
         # Bare interpreter: match the harness name in its script path.
         args=$(ps -o args= -p "$pid" 2>/dev/null)

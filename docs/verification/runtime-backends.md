@@ -1727,3 +1727,8 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 6. `bin/fm-control.sh <id> exit` stopped the agent and `bin/fm-teardown.sh` returned the worktree and closed the item.
 
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the primary evidence; the worker path above is refreshed by repeating the scout dispatch after any omp upgrade.
+
+## Google Antigravity CLI (agy)
+
+agy runs crewmate, scout, and primary work; [`agy.md`](agy.md) owns the 2026-09-11 evidence against agy 1.2.1.
+On the tmux backend `ps -o comm=` reports the bare name `agy`, and `tests/fm-harness-liveness-drift-live-e2e.test.sh` printed `agy 1.2.1: title='agy' foreground=[agy ]` and `ok - harness liveness: agy 1.2.1 classifies alive`; rerun that guard after an agy upgrade.
